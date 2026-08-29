@@ -43,6 +43,33 @@
       aspect-ratio: 4 / 3;
       max-height: 270px;
       touch-action: none;
+      contain: layout paint size;
+      isolation: isolate;
+      transform: translateZ(0);
+    }
+
+    #video-wrapper {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      contain: strict;
+    }
+
+    #snapshot-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 1rem;
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      transform-origin: center center;
+      will-change: transform;
     }
 
     #native-video {
@@ -50,6 +77,8 @@
       height: 100%;
       object-fit: cover;
       border-radius: 1rem;
+      transform-origin: center center;
+      will-change: transform;
     }
 
     #reader {
@@ -65,6 +94,8 @@
       height: 100% !important;
       object-fit: cover !important;
       border-radius: 1rem;
+      transform-origin: center center;
+      will-change: transform;
     }
 
     #reader__scan_region,
@@ -87,6 +118,12 @@
       pointer-events: none !important;
     }
 
+    .scan-frame-box {
+      contain: layout paint;
+      isolation: isolate;
+      transform: translateZ(0);
+    }
+
     .corner-mark {
       position: absolute;
       width: 22px;
@@ -96,20 +133,27 @@
     }
 
     @keyframes scan-laser {
-      0% { top: 8%; opacity: 0.8; }
-      50% { top: 88%; opacity: 1; }
-      100% { top: 8%; opacity: 0.8; }
+      0% {
+        transform: translate3d(0, 6px, 0);
+        opacity: 0.7;
+      }
+      100% {
+        transform: translate3d(0, 112px, 0);
+        opacity: 1;
+      }
     }
 
     .scanner-laser {
       position: absolute;
-      left: 2%;
-      right: 2%;
-      height: 2.5px;
-      background: linear-gradient(90deg, rgba(56,189,248,0) 0%, rgba(56,189,248,0.95) 20%, #38bdf8 50%, rgba(56,189,248,0.95) 80%, rgba(56,189,248,0) 100%);
-      box-shadow: 0 0 12px 2.5px rgba(56, 189, 248, 0.9);
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent 0%, rgba(56, 189, 248, 0.3) 12%, #38bdf8 50%, rgba(56, 189, 248, 0.3) 88%, transparent 100%);
+      filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.9));
       border-radius: 9999px;
-      animation: scan-laser 1.4s ease-in-out infinite;
+      will-change: transform;
+      animation: scan-laser 1.5s ease-in-out infinite alternate;
       pointer-events: none;
     }
 
@@ -133,8 +177,11 @@
     </header>
 
     <div id="scanner-wrapper" class="camera-container relative rounded-2xl overflow-hidden shadow-lg border border-slate-700/60 my-2 flex items-center justify-center bg-slate-950">
-      <video id="native-video" class="hidden" playsinline muted autoplay></video>
-      <div id="reader" class="hidden w-full h-full"></div>
+      <div id="video-wrapper">
+        <canvas id="snapshot-canvas" class="hidden"></canvas>
+        <video id="native-video" class="hidden" playsinline muted autoplay></video>
+        <div id="reader" class="hidden w-full h-full"></div>
+      </div>
 
       <button id="btn-torch" type="button" class="hidden absolute top-3 right-3 z-30 w-10 h-10 rounded-full bg-black/60 backdrop-blur-md text-white flex items-center justify-center border border-white/20 active:scale-90 transition-transform shadow-md" title="Фонарик">
         <svg id="torch-off-icon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -172,7 +219,7 @@
       </div>
 
       <div id="scanner-overlay" class="hidden absolute inset-0 pointer-events-none z-10 flex items-center justify-center p-3">
-        <div class="relative w-[86%] aspect-[2.4/1] max-h-[50%]">
+        <div class="scan-frame-box relative w-[86%] aspect-[2.4/1] max-h-[50%]">
           <div class="corner-mark top-0 left-0 border-t-[3.5px] border-l-[3.5px] rounded-tl-lg"></div>
           <div class="corner-mark top-0 right-0 border-t-[3.5px] border-r-[3.5px] rounded-tr-lg"></div>
           <div class="corner-mark bottom-0 left-0 border-b-[3.5px] border-l-[3.5px] rounded-bl-lg"></div>
@@ -279,6 +326,8 @@
       }
     }
 
+    const isIOS = ['ios', 'macos'].includes(tg?.platform) || /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
     function triggerHaptic(type = 'success') {
       try {
         if (!tg?.HapticFeedback) return;
@@ -291,6 +340,7 @@
     }
 
     const scannerWrapper = document.getElementById('scanner-wrapper');
+    const snapshotCanvas = document.getElementById('snapshot-canvas');
     const nativeVideo = document.getElementById('native-video');
     const readerContainer = document.getElementById('reader');
     const placeholder = document.getElementById('scanner-placeholder');
@@ -341,10 +391,13 @@
     let isTorchOn = false;
     let currentZoom = 1.0;
     let minZoom = 1.0;
-    let maxZoom = 1.0;
+    let maxZoom = 4.0;
     let hasHardwareZoom = false;
+    let isHardwareZoomBusy = false;
+    let pendingHardwareZoom = null;
 
-    let initialPinchDist = null;
+    let activePinchTouchIds = null;
+    let initialPinchDist = 0;
     let startZoomOnPinch = 1.0;
     let hideZoomBadgeTimer = null;
 
@@ -407,9 +460,7 @@
 
         const essentialFormats = ['ean_13', 'ean_8', 'upc_a'];
         const hasEssential = essentialFormats.some(f => supported.includes(f));
-        if (!hasEssential) {
-          return false;
-        }
+        if (!hasEssential) return false;
 
         const needed = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'qr_code'];
         const available = needed.filter(f => supported.includes(f));
@@ -428,9 +479,37 @@
 
       candidateCode = '';
       candidateHits = 0;
+      currentZoom = 1.0;
+      nativeVideo.style.transform = 'none';
 
+      snapshotCanvas.classList.add('hidden');
+      snapshotCanvas.style.transform = 'none';
       hideAllCards();
       setPlaceholderState('loading');
+
+      if (!isIOS && mediaStream && mediaStream.active && videoTrack && videoTrack.readyState === 'live') {
+        try {
+          if (!nativeVideo.classList.contains('hidden')) {
+            await nativeVideo.play();
+            scannerOverlay.classList.remove('hidden');
+            setPlaceholderState('hidden');
+            isScanning = true;
+            isStarting = false;
+            if (nativeScanTimer) clearInterval(nativeScanTimer);
+            nativeScanTimer = setInterval(scanNativeRoiFrame, 65);
+            return;
+          } else if (html5QrCode) {
+            await html5QrCode.resume();
+            scannerOverlay.classList.remove('hidden');
+            setPlaceholderState('hidden');
+            isScanning = true;
+            isStarting = false;
+            return;
+          }
+        } catch (e) {
+          await fullStopScanner();
+        }
+      }
 
       const hasNative = await initBarcodeDetectorEngine();
 
@@ -467,6 +546,7 @@
         videoTrack = mediaStream.getVideoTracks()[0];
         setupHardwareControls(videoTrack);
 
+        snapshotCanvas.classList.add('hidden');
         nativeVideo.classList.remove('hidden');
         readerContainer.classList.add('hidden');
         scannerOverlay.classList.remove('hidden');
@@ -476,14 +556,15 @@
 
         if (!roiCanvas) {
           roiCanvas = document.createElement('canvas');
+          roiCanvas.width = 1000;
+          roiCanvas.height = 455;
           roiCtx = roiCanvas.getContext('2d', { willReadFrequently: true });
         }
 
         if (nativeScanTimer) clearInterval(nativeScanTimer);
-        nativeScanTimer = setInterval(scanNativeRoiFrame, 75);
+        nativeScanTimer = setInterval(scanNativeRoiFrame, 65);
 
       } catch (err) {
-        console.warn('Native stream error, fallback...', err);
         await startFallbackScanner();
       }
     }
@@ -495,17 +576,38 @@
       const vh = nativeVideo.videoHeight;
       if (!vw || !vh) return;
 
-      const cropW = Math.floor(vw * 0.85);
-      const cropH = Math.floor(cropW / 2.4);
-      const startX = Math.floor((vw - cropW) / 2);
-      const startY = Math.floor((vh - cropH) / 2);
+      const containerW = scannerWrapper.clientWidth || 360;
+      const containerH = scannerWrapper.clientHeight || 270;
+      const containerAR = containerW / containerH;
+      const videoAR = vw / vh;
 
-      if (roiCanvas.width !== cropW || roiCanvas.height !== cropH) {
-        roiCanvas.width = cropW;
-        roiCanvas.height = cropH;
+      let visW = vw;
+      let visH = vh;
+
+      if (videoAR > containerAR) {
+        visW = vh * containerAR;
+        visH = vh;
+      } else {
+        visW = vw;
+        visH = vw / containerAR;
       }
 
-      roiCtx.drawImage(nativeVideo, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
+      const digitalFactor = hasHardwareZoom ? 1.0 : currentZoom;
+      const activeVisW = visW / digitalFactor;
+      const activeVisH = visH / digitalFactor;
+
+      const laserW = activeVisW * 0.92;
+      const laserH = laserW / 2.2;
+
+      const startX = Math.floor((vw - laserW) / 2);
+      const startY = Math.floor((vh - laserH) / 2);
+
+      const sX = Math.max(0, startX);
+      const sY = Math.max(0, startY);
+      const sW = Math.min(vw - sX, laserW);
+      const sH = Math.min(vh - sY, laserH);
+
+      roiCtx.drawImage(nativeVideo, sX, sY, sW, sH, 0, 0, roiCanvas.width, roiCanvas.height);
 
       try {
         const barcodes = await barcodeDetector.detect(roiCanvas);
@@ -554,8 +656,8 @@
       const scanConfig = {
         fps: 25,
         qrbox: (w, h) => {
-          const width = Math.floor((w || 320) * 0.86);
-          const height = Math.min(Math.floor(width / 2.4), Math.floor((h || 240) * 0.5));
+          const width = Math.floor((w || 320) * 0.88);
+          const height = Math.min(Math.floor(width / 2.2), Math.floor((h || 240) * 0.55));
           return { width, height };
         },
         disableFlip: true
@@ -586,6 +688,7 @@
 
         isScanning = true;
         isStarting = false;
+        snapshotCanvas.classList.add('hidden');
         scannerOverlay.classList.remove('hidden');
         setPlaceholderState('hidden');
 
@@ -604,6 +707,40 @@
       }
     }
 
+    function captureSnapshotFrame() {
+      try {
+        let videoEl = null;
+
+        if (!nativeVideo.classList.contains('hidden') && nativeVideo.videoWidth > 0) {
+          videoEl = nativeVideo;
+        } else {
+          const fallbackVid = document.querySelector('#reader video');
+          if (fallbackVid && fallbackVid.videoWidth > 0) {
+            videoEl = fallbackVid;
+          }
+        }
+
+        if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+          snapshotCanvas.width = videoEl.videoWidth;
+          snapshotCanvas.height = videoEl.videoHeight;
+          const ctx = snapshotCanvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(videoEl, 0, 0, videoEl.videoWidth, videoEl.videoHeight);
+            
+            if (!hasHardwareZoom && currentZoom > 1.0) {
+              snapshotCanvas.style.transform = `scale(${currentZoom})`;
+            } else {
+              snapshotCanvas.style.transform = 'none';
+            }
+
+            snapshotCanvas.classList.remove('hidden');
+            return true;
+          }
+        }
+      } catch (e) {}
+      return false;
+    }
+
     async function onCodeDetected(code) {
       if (isProcessing) return;
       isProcessing = true;
@@ -611,11 +748,17 @@
 
       try {
         triggerHaptic('success');
-        await stopScanner(false);
+        captureSnapshotFrame();
+
+        if (isIOS) {
+          await fullStopScanner(false);
+        } else {
+          await pauseScanner();
+        }
+
         loadingState.classList.remove('hidden');
         await fetchProductData(code);
       } catch (err) {
-        console.error('Error during barcode detection handling:', err);
         loadingState.classList.add('hidden');
         renderNetworkError('Ошибка обработки', 'Произошла непредвиденная ошибка при чтении кода.');
       } finally {
@@ -623,7 +766,7 @@
       }
     }
 
-    async function stopScanner(resetToIdle = true) {
+    async function pauseScanner() {
       isStarting = false;
       isScanning = false;
       if (nativeScanTimer) {
@@ -633,7 +776,30 @@
 
       if (isTorchOn && videoTrack) {
         try { await videoTrack.applyConstraints({ advanced: [{ torch: false }] }); } catch (e) {}
+        isTorchOn = false;
+        updateTorchUi();
       }
+
+      if (nativeVideo && !nativeVideo.paused) {
+        try { nativeVideo.pause(); } catch (e) {}
+      }
+
+      if (html5QrCode && html5QrCode.isScanning) {
+        try { await html5QrCode.pause(true); } catch (e) {}
+      }
+
+      currentZoom = 1.0;
+      nativeVideo.style.transform = 'none';
+      const fallbackVideo = document.querySelector('#reader video');
+      if (fallbackVideo) fallbackVideo.style.transform = 'none';
+
+      zoomBadge.classList.add('hidden');
+      scannerOverlay.classList.add('hidden');
+      setPlaceholderState('hidden');
+    }
+
+    async function fullStopScanner(resetToIdle = true) {
+      await pauseScanner();
 
       if (mediaStream) {
         mediaStream.getTracks().forEach(t => t.stop());
@@ -652,11 +818,12 @@
       }
 
       hideTorchUi();
-      zoomBadge.classList.add('hidden');
-      scannerOverlay.classList.add('hidden');
 
-      if (resetToIdle) setPlaceholderState('idle');
-      else setPlaceholderState('hidden');
+      if (resetToIdle) {
+        snapshotCanvas.classList.add('hidden');
+        snapshotCanvas.style.transform = 'none';
+        setPlaceholderState('idle');
+      }
     }
 
     function setupHardwareControls(track) {
@@ -671,27 +838,60 @@
           hideTorchUi();
         }
 
-        if (capabilities.zoom) {
+        if (capabilities.zoom && typeof capabilities.zoom.min === 'number' && typeof capabilities.zoom.max === 'number') {
           hasHardwareZoom = true;
           minZoom = capabilities.zoom.min || 1.0;
           maxZoom = Math.min(capabilities.zoom.max || 5.0, 5.0);
-          currentZoom = minZoom;
         } else {
           hasHardwareZoom = false;
+          minZoom = 1.0;
+          maxZoom = 4.0;
         }
+        currentZoom = minZoom;
       } catch (e) {
+        hasHardwareZoom = false;
+        minZoom = 1.0;
+        maxZoom = 4.0;
         hideTorchUi();
       }
     }
 
-    async function applyZoom(val) {
-      if (!videoTrack || !hasHardwareZoom) return;
+    function setZoom(val) {
       const target = Math.max(minZoom, Math.min(val, maxZoom));
       currentZoom = target;
+      showZoomBadge(target);
+
+      if (hasHardwareZoom && videoTrack) {
+        nativeVideo.style.transform = 'none';
+        const fallbackVideo = document.querySelector('#reader video');
+        if (fallbackVideo) fallbackVideo.style.transform = 'none';
+        queueHardwareZoom(target);
+      } else {
+        const transformValue = `scale(${target})`;
+        nativeVideo.style.transform = transformValue;
+        const fallbackVideo = document.querySelector('#reader video');
+        if (fallbackVideo) fallbackVideo.style.transform = transformValue;
+      }
+    }
+
+    async function queueHardwareZoom(val) {
+      if (isHardwareZoomBusy) {
+        pendingHardwareZoom = val;
+        return;
+      }
+
+      isHardwareZoomBusy = true;
       try {
-        await videoTrack.applyConstraints({ advanced: [{ zoom: target }] });
-        showZoomBadge(target);
-      } catch (e) {}
+        await videoTrack.applyConstraints({ advanced: [{ zoom: val }] });
+      } catch (e) {
+      } finally {
+        isHardwareZoomBusy = false;
+        if (pendingHardwareZoom !== null) {
+          const next = pendingHardwareZoom;
+          pendingHardwareZoom = null;
+          queueHardwareZoom(next);
+        }
+      }
     }
 
     function showZoomBadge(val) {
@@ -701,30 +901,62 @@
       hideZoomBadgeTimer = setTimeout(() => zoomBadge.classList.add('hidden'), 1200);
     }
 
+    function getTouchById(touchList, id) {
+      for (let i = 0; i < touchList.length; i++) {
+        if (touchList[i].identifier === id) {
+          return touchList[i];
+        }
+      }
+      return null;
+    }
+
     scannerWrapper.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2 && hasHardwareZoom) {
-        initialPinchDist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
+      if (!isScanning) return;
+
+      if (!activePinchTouchIds && e.touches.length >= 2) {
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        activePinchTouchIds = [t1.identifier, t2.identifier];
+        initialPinchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
         startZoomOnPinch = currentZoom;
       }
     }, { passive: true });
 
     scannerWrapper.addEventListener('touchmove', (e) => {
-      if (e.touches.length === 2 && initialPinchDist && hasHardwareZoom) {
-        const currentDist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
+      if (!isScanning || !activePinchTouchIds || initialPinchDist <= 0) return;
+
+      const t1 = getTouchById(e.touches, activePinchTouchIds[0]);
+      const t2 = getTouchById(e.touches, activePinchTouchIds[1]);
+
+      if (t1 && t2) {
+        const currentDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
         const factor = currentDist / initialPinchDist;
-        applyZoom(startZoomOnPinch * factor);
+        setZoom(startZoomOnPinch * factor);
       }
     }, { passive: true });
 
-    scannerWrapper.addEventListener('touchend', (e) => {
-      if (e.touches.length < 2) initialPinchDist = null;
-    }, { passive: true });
+    function handleTouchEnd(e) {
+      if (!activePinchTouchIds) return;
+
+      const t1 = getTouchById(e.touches, activePinchTouchIds[0]);
+      const t2 = getTouchById(e.touches, activePinchTouchIds[1]);
+
+      if (!t1 || !t2) {
+        if (e.touches.length >= 2) {
+          const newT1 = e.touches[0];
+          const newT2 = e.touches[1];
+          activePinchTouchIds = [newT1.identifier, newT2.identifier];
+          initialPinchDist = Math.hypot(newT1.clientX - newT2.clientX, newT1.clientY - newT2.clientY);
+          startZoomOnPinch = currentZoom;
+        } else {
+          activePinchTouchIds = null;
+          initialPinchDist = 0;
+        }
+      }
+    }
+
+    scannerWrapper.addEventListener('touchend', handleTouchEnd, { passive: true });
+    scannerWrapper.addEventListener('touchcancel', handleTouchEnd, { passive: true });
 
     async function toggleTorch() {
       if (!videoTrack || !isTorchSupported) return;
@@ -913,7 +1145,7 @@
       errorMessage.textContent = message;
       errorMessage.classList.remove('hidden');
       actionButtons.classList.add('hidden');
-      setPlaceholderState('idle');
+      fullStopScanner();
       triggerHaptic('error');
     }
 
@@ -922,11 +1154,11 @@
     btnTorch.addEventListener('click', toggleTorch);
 
     document.addEventListener('visibilitychange', async () => {
-      if (document.hidden && isScanning) await stopScanner(true);
+      if (document.hidden) await fullStopScanner();
     });
 
     window.addEventListener('pagehide', async () => {
-      if (isScanning) await stopScanner(true);
+      await fullStopScanner();
     });
   </script>
 </body>
