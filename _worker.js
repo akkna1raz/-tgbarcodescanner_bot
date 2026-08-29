@@ -44,9 +44,7 @@ async function handleProductLookup(request, url, ctx) {
       const cacheUrl = new URL(`${url.origin}/api/product?ver=${CACHE_VERSION}&barcode=${encodeURIComponent(barcode)}`);
       cacheKey = new Request(cacheUrl.toString(), { method: 'GET' });
     }
-  } catch (e) {
-    console.warn('Cache init error:', e);
-  }
+  } catch (e) {}
 
   if (!forceFresh && cache && cacheKey) {
     try {
@@ -59,9 +57,7 @@ async function handleProductLookup(request, url, ctx) {
           return res;
         }
       }
-    } catch (e) {
-      console.warn('Cache match error:', e);
-    }
+    } catch (e) {}
   }
 
   const { productData, hasUpstreamSuccess } = await searchAllDatabases(barcode);
@@ -80,13 +76,9 @@ async function handleProductLookup(request, url, ctx) {
     if (cache && cacheKey && ctx && typeof ctx.waitUntil === 'function') {
       try {
         ctx.waitUntil(
-          cache.put(cacheKey, response.clone()).catch(err => {
-            console.warn('Cache put background error:', err);
-          })
+          cache.put(cacheKey, response.clone()).catch(() => {})
         );
-      } catch (e) {
-        console.warn('Cache waitUntil error:', e);
-      }
+      } catch (e) {}
     }
 
     return response;
